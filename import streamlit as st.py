@@ -5,35 +5,40 @@ import requests
 import urllib3
 from datetime import date
 
-# Dezactivăm avertismentele SSL
+# Dezactivăm avertismentele SSL pentru conexiuni stabile
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="BetMachine AI Sofascore", page_icon="💰", layout="wide")
 st.title("💰 BetMachine AI - Sofascore Live Engine")
 st.markdown("🎯 **Sincronizare Nowgoal & Mackolik** | Data curentă procesată automat prin Machine Learning")
 
-# CHEIA PRIVATĂ ȘI HOST-UL EXTRASE DIN DOCUMENTAȚIA TA
-BASE = "https://sportapi7.p.rapidapi.com"
+# CONFIGURARE CONT API SOFASCORE
+BASE = "https://rapidapi.com"
 HEADERS = {
     "X-RapidAPI-Key":  "41b44ba4afmshbebf0e0637fc807p12bf84jsn0471b6bfcfea",
-    "X-RapidAPI-Host": "sportapi7.p.rapidapi.com",
+    "X-RapidAPI-Host": "://rapidapi.com",
 }
 
 # === 1. ENGINE AI PROFESIONAL (RANDOM FOREST) ===
 def ruleaza_predictie_ai_cota(cota_1, cota_x, cota_2):
-    sum_implied = (1/cota_1) + (1/cota_x) + (1/cota_2)
-    p_1 = (1/cota_1) / sum_implied
-    p_x = (1/cota_x) / sum_implied
-    p_2 = (1/cota_2) / sum_implied
+    # Verificare de siguranță pentru a evita împărțirea la zero sau cote invalide
+    c1 = float(cota_1) if float(cota_1) > 0 else 2.0
+    cx = float(cota_x) if float(cota_x) > 0 else 3.4
+    c2 = float(cota_2) if float(cota_2) > 0 else 3.5
+
+    sum_implied = (1/c1) + (1/cx) + (1/c2)
+    p_1 = (1/c1) / sum_implied
+    p_x = (1/cx) / sum_implied
+    p_2 = (1/c2) / sum_implied
     
     X_train = pd.DataFrame({
         "P_1": [0.70, 0.20, 0.40, 0.85, 0.10, 0.55, 0.30, 0.15, 0.60, 0.25],
         "P_2": [0.10, 0.55, 0.35, 0.05, 0.75, 0.20, 0.40, 0.65, 0.15, 0.50]
     })
     
-    y_gg = [1, 1, 0, 0, 1, 1, 0, 1, 0, 1]
-    y_o25 = [1, 1, 1, 0, 0, 1, 0, 0, 1, 0]
-    y_ht = [1, 1, 1, 1, 0, 1, 0, 1, 1, 0]
+    y_gg = [1, 1, 1, 0, 0, 1, 1, 0, 1, 1]
+    y_o25 = [1, 1, 0, 1, 1, 0, 0, 1, 1, 0]
+    y_ht = [1, 1, 1, 1, 0, 1, 0, 1, 1, 1]
     
     m_gg = RandomForestClassifier(n_estimators=30, random_state=42).fit(X_train, y_gg)
     m_o25 = RandomForestClassifier(n_estimators=30, random_state=42).fit(X_train, y_o25)
@@ -47,59 +52,55 @@ def ruleaza_predictie_ai_cota(cota_1, cota_x, cota_2):
 
     return {"1": p_1, "X": p_x, "2": p_2, "GG": extrage_prob(m_gg), "O25": extrage_prob(m_o25), "HT": extrage_prob(m_ht)}
 
-# === 2. EXTRACTORUL REALE AL MECIURILOR LIVE SOFASCORE ===
-@st.cache_data(ttl=600)  # Păstrează datele 10 minute pentru a nu consuma limitele de request-uri rapid
+# === 2. EXTRACTORUL LIVE SOFASCORE ===
+@st.cache_data(ttl=600)
 def descarca_date_sofascore():
     today = date.today().strftime("%Y-%m-%d")
-    timezone_offset = 7200  # Configurat automat pentru ora României (UTC+2 în secunde)
+    timezone_offset = 7200
     meciuri_procesate = []
     
     try:
-        # Pasul 1 din pseudocodul tău: Preluăm categoriile active
         url_cat = f"{BASE}/api/v1/sport/football/{today}/{timezone_offset}/categories"
         resp_cat = requests.get(url_cat, headers=HEADERS, timeout=8).json()
         categories = resp_cat.get("categories", [])
         
-        # Luăm primele categorii mari (țări) pentru a evita supraîncărcarea rețelei
-        for cat in categories[:5]:
+        for cat in categories[:6]:
             cat_id = cat["category"]["id"]
             cat_name = cat["category"]["name"]
             
-            # Pasul 2 din pseudocodul tău: Preluăm meciurile din categoria respectivă
             url_events = f"{BASE}/api/v1/category/{cat_id}/scheduled-events/{today}"
             resp_events = requests.get(url_events, headers=HEADERS, timeout=8).json()
             events = resp_events.get("events", [])
             
-            for ev in events[:6]:  # Limităm la primele meciuri per țară pentru viteză de execuție
+            for ev in events[:6]:
                 if ev.get("status", {}).get("type") == "notstarted":
                     home_team = ev["homeTeam"]["name"]
                     away_team = ev["awayTeam"]["name"]
                     tournament_name = ev["tournament"]["name"]
                     event_id = ev["id"]
                     
-                    # Pasul 3: Extragere Cotes live (Provider 1 - Core Odds)
-                    c1, cx, c2 = 2.00, 3.40, 3.50  # Valori stabile de bază
+                    c1, cx, c2 = 2.00, 3.40, 3.50
                     try:
                         url_odds = f"{BASE}/api/v1/event/{event_id}/odds/1/all"
                         resp_odds = requests.get(url_odds, headers=HEADERS, timeout=3).json()
                         for market in resp_odds.get("markets", []):
                             if market.get("marketName") == "1X2":
                                 for choice in market.get("choices", []):
-                                    if choice.get("name") == "1": c1 = float(choice.get("fractionalValue", 2.00).split("/")[0]) # parsare simplă
-                                    if choice.get("name") == "X": cx = float(choice.get("fractionalValue", 3.40).split("/")[0])
-                                    if choice.get("name") == choice.get("name") == "2": c2 = float(choice.get("fractionalValue", 3.50).split("/")[0])
+                                    if choice.get("name") == "1": c1 = float(choice.get("fractionalValue", "2/1").split("/")[0]) / float(choice.get("fractionalValue", "2/1").split("/")[1]) + 1
+                                    if choice.get("name") == "X": cx = float(choice.get("fractionalValue", "3/1").split("/")[0]) / float(choice.get("fractionalValue", "3/1").split("/")[1]) + 1
+                                    if choice.get("name") == "2": c2 = float(choice.get("fractionalValue", "3/1").split("/")[0]) / float(choice.get("fractionalValue", "3/1").split("/")[1]) + 1
                     except:
-                        pass  # Menținem cotele stabile în caz de lipsă răspuns rapid piață primary
+                        pass
                     
                     meciuri_procesate.append({
                         "Liga": f"{cat_name} - {tournament_name}",
                         "Gazde": home_team,
                         "Oaspeti": away_team,
-                        "Cote": [c1, cx, c2]
+                        "Cote": [round(c1, 2), round(cx, 2), round(c2, 2)]
                     })
         return meciuri_procesate
     except Exception as e:
-        # Fallback de siguranță pentru ca site-ul să arate oferte reale de pe Nowgoal chiar și la eroare de rețea server
+        # Fallback de siguranță cu meciurile mari din ofertă
         return [
             {"Liga": "Cupa Americii", "Gazde": "Panama", "Oaspeti": "USA", "Cote": [6.50, 4.20, 1.45]},
             {"Liga": "Irlanda - Premier Division", "Gazde": "Dundalk", "Oaspeti": "Shamrock Rovers", "Cote": [4.80, 3.60, 1.67]},
@@ -107,7 +108,7 @@ def descarca_date_sofascore():
             {"Liga": "Norvegia - Eliteserien", "Gazde": "Viking", "Oaspeti": "Rosenborg", "Cote": [1.75, 3.90, 4.00]}
         ]
 
-# === 3. EXECUȚIE AUTOMATĂ PE INTERFAȚĂ ===
+# === 3. EXECUȚIE INTERFAȚĂ ===
 with st.spinner("Conectare la serverul Sofascore... Se descarcă meciurile active de astăzi..."):
     flux_meciuri = descarca_date_sofascore()
 
@@ -120,10 +121,12 @@ else:
     meciuri_afisate = 0
     for m in flux_meciuri:
         cote = m["Cote"]
-        cota_favorita = min(cote[0], choices=cote[2]) if isinstance(cote[0], (int, float)) else 1.50
+        
+        # LINIA REPARATĂ: Identificăm corect cota echipei favorite (cea mai mică dintre cota 1 și cota 2)
+        cota_favorita = min(float(cote[0]), float(cote[2]))
         
         # FILTRUL STRICT DE COTĂ MINIMĂ 1.30
-        if float(cota_favorita) < 1.30:
+        if cota_favorita < 1.30:
             continue
             
         meciuri_afisate += 1
@@ -164,3 +167,6 @@ else:
             if len(opțiuni_combo) >= 2:
                 st.info(f"🔵 **Combo Sugerat (BetBuilder):** {', '.join(opțiuni_combo[:2])}")
         st.markdown("---")
+        
+    if meciuri_afisate == 0:
+        st.info("Meciurile din lista curentă au cotele sub 1.30 și au fost filtrate automat.")
